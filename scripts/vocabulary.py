@@ -1,10 +1,25 @@
 import pandas
 import json
 
+
 class Vocabulary:
-    '''Словарь токенов и их индексов'''
-    def __init__(self, token_to_idx : dict = None, mask_token : str = '<MASK>', unk_token : str = '<UNK>',\
-                 bos_token : str = '<BOS>', eos_token : str = '<EOS>', is_lexical_tokens : bool=True):
+    """
+    Хранит словарь токенов и их индексов.
+    Позволяет преобразовывать токены в числа и обратно,
+    а также сохранять/загружать структуру из JSON‑файла.
+    """
+
+    def __init__(self, token_to_idx: dict = None, mask_token: str = '<MASK>',
+                 unk_token: str = '<UNK>', bos_token: str = '<BOS>',
+                 eos_token: str = '<EOS>', is_lexical_tokens: bool = True):
+        """
+        Инициализация словаря.
+
+        * `token_to_idx` – начальный словарь (может быть пустым).
+        * `mask_token`, `unk_token`, `bos_token`, `eos_token`
+          – специальные токены, которые всегда присутствуют в словаре
+          и добавляются автоматически при `is_lexical_tokens=True`.
+        """
         if token_to_idx is None:
             token_to_idx = {}
         self.token_to_idx = token_to_idx
@@ -26,10 +41,21 @@ class Vocabulary:
         return len(self.token_to_idx)
 
     def to_serializable(self) -> dict:
-        return {'token_to_idx' : self.token_to_idx, 'mask_token' : self.mask_token,\
-                'unk_token' : self.unk_token, 'bos_token' : self.bos_token, 'eos_token' : self.eos_token, 'is_lexical_tokens' : self._is_lexical_tokens}
+        """
+        Преобразует словарь в формат, пригодный для JSON.
+        Возвращаемый объект можно напрямую записать через json.dump().
+        """
+        return {
+            'token_to_idx': self.token_to_idx,
+            'mask_token': self.mask_token,
+            'unk_token': self.unk_token,
+            'bos_token': self.bos_token,
+            'eos_token': self.eos_token,
+            'is_lexical_tokens': self._is_lexical_tokens
+        }
     
     def to_json(self, filepath : str):
+        """Сохраняет словарь в файл JSON."""
         with open(filepath, 'w', encoding='utf-8') as file:
             json.dump(self.to_serializable(), file, ensure_ascii=False)
 
@@ -43,11 +69,23 @@ class Vocabulary:
         return cls(**serializable)
 
     @classmethod
-    def from_dataframe(cls, dataframe : pandas.DataFrame, tokenizer, treshold_freq=25):
+    def from_dataframe(cls, dataframe: pandas.DataFrame, tokenizer, treshold_freq=25):
+        """
+        Строит Vocabulary из Pandas DataFrame.
+
+        Параметры:
+            * `dataframe` – таблица со столбцами, содержащими токены (строки).
+            * `tokenizer` – объект для разбиения текста на токены.
+            * `treshold_freq` – минимальная частота появления токена,
+              чтобы он попал в словарь.
+
+        Возвращает экземпляр Vocabulary с заполненным словарём.
+        """
+        # TODO: Реализовать построение по df
         pass
     
-    def add_token(self, token : str) -> int:
-        '''Добавить токен в словарь'''
+    def add_token(self, token: str) -> int:
+        """Добавляет токен в словарь и возвращает его индекс."""
         if token not in self.token_to_idx:
             idx = len(self.token_to_idx)
             self.token_to_idx[token] = idx
@@ -56,23 +94,27 @@ class Vocabulary:
         else:
             return self.token_to_idx[token]
 
-    def add_tokens(self, tokens : list[str]) -> list[int]:
-        '''Добавить список токенов в словарь'''
+    def add_tokens(self, tokens: list[str]) -> list[int]:
+        """Добавляет список токенов и возвращает их индексы."""
         return [self.add_token(token) for token in tokens]
 
-    def get_token_index(self, token : str) -> int:
-        '''Возвращает индекс токена или unk_index'''
+    def get_token_index(self, token: str) -> int:
+        """
+        Возвращает индекс токена.
+        Если токен отсутствует – возвращается `unk_index`.
+        """
         if token in self.token_to_idx:
             return self.token_to_idx[token]
         else:
             return self.unk_index
 
-    def get_token(self, index : int) -> str:
-        '''Возвращает токен, соответствующий индексу, или unk_token'''
+    def get_token(self, index: int) -> str:
+        """Возвращает токен по индексу или `unk_token`, если индекс неизвестен."""
         if index in self._idx_to_token:
             return self._idx_to_token[index]
         else:
             return self.unk_token
-        
+
     def size(self):
-        return len(self.token_to_idx)
+        """Alias для len() – возвращает размер словаря."""
+        return self.__len__()

@@ -1,38 +1,35 @@
 import numpy as np
-import gc
-import pandas
-import time
-import pandas as pd
-import regex as re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
-def dot_product_attention(encoder_state_vectors : torch.tensor, query_vector : torch.tensor):
+
+def dot_product_attention(encoder_state_vectors: torch.tensor,
+                          query_vector: torch.tensor):
     """
-    Args:
-        encoder_state_vectors (torch.Tensor): 3dim tensor from bi-GRU in encoder
-        query_vector (torch.Tensor): hidden state
+    Алгоритм внимания (dot‑product).  
+    Вычисляет контекстный вектор как взвешенную сумму
+    выходов энкодера, где веса – softmax от скалярного произведения
+    текущего скрытого состояния декодера и всех состояний энкодера.
     """
     # query_vector.size() = [B, D]
     # encoder_state_vectors.size() = [B, N, D]
-    # print(f'encoder_state_vectors.size() {encoder_state_vectors.size()}')
-    # print(f'query_vector.size() {query_vector.size()}')
     vector_scores = torch.matmul(encoder_state_vectors, query_vector.unsqueeze(dim=2)) # [B, N, 1]
-    # print(f'before squeeze vector_scores.size() {vector_scores.size()}')
     vector_scores = vector_scores.squeeze(dim=-1) # [B, N]
-    # print(f'after squeeze vector_scores.size() {vector_scores.size()}')
     vector_probabilities = F.softmax(vector_scores, dim=-1) # [B, N]
-    # print(f'vector_probabilities.size() {vector_probabilities.size()}')
     encoder_state_vectors = encoder_state_vectors.transpose(-2, -1) # [B, D, N]
     context_vectors = torch.matmul(encoder_state_vectors, vector_probabilities.unsqueeze(dim=2)).squeeze(dim=-1) # [B, D]
-    # print(f'context_vectors.size() {context_vectors.size()}')
     return context_vectors, vector_probabilities
 
 class RNNEncoder(nn.Module):
+    """
+    Двунаправленный GRU‑энкодер.
+    Принимает векторизованные последовательности и возвращает:
+        * unpacked_states – выходы по каждому тайм‑шагу (B, N, 2*hidden)
+        * final_hidden   – объединённые скрытые состояния из обеих направлений
+          (B, 2*hidden)
+    """
     def __init__(self, num_embeddings : int, embedding_size : int, rnn_hidden_size : int):
         super().__init__()
     
@@ -41,18 +38,14 @@ class RNNEncoder(nn.Module):
     
     def forward(self, x_source : torch.tensor, x_lengths : torch.tensor):
         """
-        Args:
-            x_source (torch.Tensor): the input data tensor.
-                x_source.shape is (batch, seq_size)
-            x_lengths (torch.Tensor): a vector of lengths for each item in the batch
-        Returns:
-            a tuple: x_unpacked (torch.Tensor), x_birnn_h (torch.Tensor)
-                x_unpacked.shape = (batch, seq_size, rnn_hidden_size * 2)
-                x_birnn_h.shape = (batch, rnn_hidden_size * 2)
+        Вход:
+            * x_source   – тензор индексов (B, seq_len)
+            * x_lengths  – длины последовательностей в батче
+        Вывод:
+            * unpacked_states – тензор всех состояний энкодера (B, N, 2*hidden)
+            * final_hidden    – объединённые финальные скрытые состояния (B, 2*hidden)
         """
-        # print(f'x_source.size() {x_source.size()}')
         x_embedded = self.source_embedding(x_source)
-        # print(f'x_embedded.size() {x_embedded.size()}')
         # create PackedSequence; x_packed.data.shape=(number_items, embeddign_size)
         x_packed = pack_padded_sequence(x_embedded, x_lengths.detach().cpu().numpy(), 
                                         batch_first=True)
@@ -65,14 +58,16 @@ class RNNEncoder(nn.Module):
         # flatten features; reshape to (batch_size, num_rnn * feature_size)
         x_birnn_h = x_birnn_h.reshape(x_birnn_h.size(0), -1) # Конкатенация последних скрытых состояний из двух RNN
         
-        x_unpacked, _ = pad_packed_sequence(x_birnn_out, batch_first=True) # Выходы сети в каждый момент времени. Поскольку сеть двунаправленная, 
-        # print(f'x_unpacked.size() {x_unpacked.size()}')
-        # print(f'x_birnn_h.size() {x_birnn_h.size()}')
+        x_unpacked, _ = pad_packed_sequence(x_birnn_out, batch_first=True) # Сконкатенированные выходы двух сетей в каждый момент времени
         
         return x_unpacked, x_birnn_h
 
 
 class RNNDecoder(nn.Module):
+    """
+    GRU‑декодер с attention и линейным классификатором.
+    Для каждой позиции токена генерирует предсказание следующего слова.
+    """
     def __init__(self, num_embeddings : int, embedding_size : int, rnn_hidden_size : int, fc_hidden_size : int, bos_index : int):
         """
         Args:
@@ -99,25 +94,27 @@ class RNNDecoder(nn.Module):
         self.bos_index = bos_index
     
     def _init_indices(self, batch_size : int):
-        '''Возвращает ввектор, заполненный индексом токена BOS'''
+        """Возвращает тензор с индексом BOS для всех примеров в батче."""
         return torch.ones(batch_size, dtype=torch.int64) * self.bos_index
     
     def _init_context_vectors(self, batch_size : int):
-        """Возвращает нулевой вектор"""
+        """Инициализирует контекстные векторы нулями."""
         return torch.zeros(batch_size, self._rnn_hidden_size)
             
     def forward(self, encoder_state, initial_hidden_state, target_sequence=None, forced_batch_size=None, sample_probability=0.0, output_sequence_size=0, temperature=1):
-        """  
-        Args:
-            encoder_state (torch.Tensor): the output of the NMTEncoder
-            initial_hidden_state (torch.Tensor): The last hidden state in the  NMTEncoder
-            target_sequence (torch.Tensor): the target text data tensor
-            sample_probability (float): the schedule sampling parameter
-                probabilty of using model's predictions at each decoder step.
-                1: using only model prediction
-                0: using only target sequence
-        Returns:
-            output_vectors (torch.Tensor): prediction vectors at each output step
+        """
+        Параметры:
+            * `encoder_state` – выходы энкодера (B, N, 2*hidden)
+            * `initial_hidden_state` – финальное состояние энкодера
+            * `target_sequence` – истинные токены (B, T) для teacher‑forcing. Если None, генерируем полностью с BOS.
+            * `forced_batch_size` – размер батча при генерации (необязательно).
+            * `sample_probability` – вероятность использования собственных предсказаний вместо ground‑truth (schedule sampling).
+            * `output_sequence_size` – длина выходной последовательности (если target=None)
+            * `temperature` – для softmax, чтобы управлять случайностью.
+
+        Возвращает:
+            * output_vectors – тензор предсказанных логитов
+              (B, T, vocab_size).
         """
         if target_sequence is None:
             sample_probability = 1.0
@@ -131,7 +128,7 @@ class RNNDecoder(nn.Module):
         # use the provided encoder hidden state as the initial hidden state
         h_t = self.hidden_map(initial_hidden_state)
         
-        # Насильно меняем размер батча (используется прри генерации)
+        # Насильно меняем размер батча (используется при генерации)
         if forced_batch_size is None:
             batch_size = encoder_state.size(0)
         else:
@@ -189,6 +186,9 @@ class RNNDecoder(nn.Module):
 
 
 class Seq2Seq_Model(nn.Module):
+    """
+    Полная seq2seq архитектура: энкодер + декодер.
+    """
     def __init__(self, source_vocab_size : int, source_embedding_size : int, 
                  target_vocab_size : int, target_embedding_size : int, encoder_rnn_size : int, 
                  fc_hidden_size : int, target_bos_index : int):
